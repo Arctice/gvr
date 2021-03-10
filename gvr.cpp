@@ -3,6 +3,10 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <numeric>
+#include <unordered_map>
+#include <deque>
+#include <cmath>
 
 #include "geometry.h"
 #include "vec3.h"
@@ -11,10 +15,38 @@
 #include <SFML/Graphics.hpp>
 #include <fmt/core.h>
 
-vec3<unsigned char> rgb_light(vec3f light) {
-    auto clamp = [](auto c) { return std::min(1., std::max(0., c)); };
-    light = {clamp(light.x), clamp(light.y), clamp(light.z)};
-    return vec3<unsigned char>(light * 255.);
+struct runtime_statistics& stats();
+
+struct runtime_statistics {
+    std::unordered_map<const char*, std::deque<double>> costs;
+
+    struct perf_block {
+        perf_block(const char* key) : key(key) {}
+        ~perf_block() {
+            auto delta = std::chrono::high_resolution_clock::now() - start;
+            auto& store = stats().costs[key];
+            store.push_back(delta.count() / 1000.0);
+            if (store.size() > 10)
+                store.pop_front();
+        }
+
+        const char* key;
+        std::chrono::high_resolution_clock::time_point start =
+            std::chrono::high_resolution_clock::now();
+    };
+
+    auto time(const char* key) { return perf_block{key}; };
+
+    double avg(const char* key) {
+        auto& ts = costs[key];
+        return std::accumulate(ts.begin(), ts.end(), 0., std::plus{}) /
+               ts.size();
+    }
+};
+
+runtime_statistics& stats() {
+    static runtime_statistics self{};
+    return self;
 }
 
 struct grid {
@@ -26,14 +58,11 @@ struct grid {
     vec2i size;
     std::vector<float> cells;
 
-    const float& operator[](vec2i v) const {
-        v = unwrap(v);
-        return cells[v.y * size.x + v.x];
-    }
-    float& operator[](vec2i v) {
-        v = unwrap(v);
-        return cells[v.y * size.x + v.x];
-    }
+    const float& at(vec2i v) const { return cells[v.y * size.x + v.x]; }
+    float& at(vec2i v) { return cells[v.y * size.x + v.x]; }
+
+    const float& operator[](vec2i v) const { return at(unwrap(v)); }
+    float& operator[](vec2i v) { return at(unwrap(v)); }
     float& operator[](vec2f v) {
         return (*this)[vec2i{(int)std::floor(v.x), (int)std::floor(v.y)}];
     }
@@ -66,8 +95,8 @@ auto default_species() {
 }
 
 constexpr double decay_factor = .68;
-constexpr int sim_width = 800;
-constexpr int initial_population = 40000;
+constexpr int sim_width = 1600;
+constexpr int initial_population = 100000;
 
 struct agent {
     vec2f position;
@@ -75,87 +104,158 @@ struct agent {
     const species* species{default_species()};
 };
 
+struct simulation {
+    simulation(vec2i size) : size(size), trails(size) {}
+    vec2i size;
+    grid trails;
+    std::vector<agent> agents{};
+};
+
 agent move_agent(const grid& trails, agent a) {
-    a.direction =
-        [&]() {
-            auto pos = a.position;
-            auto dir = a.direction;
-            auto fwd = dir * a.species->sensor_distance;
-            auto sa = a.species->sensor_angle;
-            auto [left, right] = std::tuple{fwd.rotated(sa), fwd.rotated(-sa)};
-            auto [s_left, s_fwd, s_right] = std::tuple{
-                trails[pos + left], trails[pos + fwd], trails[pos + right]};
+    auto fwd_sensor = a.direction * a.species->sensor_distance;
+    auto left_sensor = fwd_sensor.rotated(a.species->sensor_angle * -1);
+    auto right_sensor = fwd_sensor.rotated(a.species->sensor_angle);
 
-            auto r = a.species->rotation_angle;
-            auto r_left = dir.rotated(r);
-            auto r_right = dir.rotated(-r);
+    auto fwd_trail = trails[a.position + fwd_sensor];
+    auto left_trail = trails[a.position + left_sensor];
+    auto right_trail = trails[a.position + right_sensor];
 
-            if (s_fwd < s_left and s_fwd > s_right)
-                return r_left;
-            if (s_fwd > s_left and s_fwd < s_right)
-                return r_right;
-            if (s_fwd < s_left and s_fwd < s_right)
-                return drand48() < .5 ? r_right : r_left;
-            return dir;
-        }()
-            .normalized();
+    if (left_trail > fwd_trail and right_trail > fwd_trail) {
+        auto side = (drand48() < .5) ? -1 : 1;
+        a.direction = a.direction.rotated(a.species->rotation_angle * side);
+    }
+    else if (left_trail > fwd_trail)
+        a.direction = a.direction.rotated(a.species->rotation_angle * -1);
+    else if (right_trail > fwd_trail)
+        a.direction = a.direction.rotated(a.species->rotation_angle);
+
     a.position += a.direction * a.species->speed;
     return a;
 }
 
-auto advance_agents(const grid& trails, std::vector<agent> agents) {
-#pragma omp for
+auto advance_agents(const simulation& state) {
+    auto agents = state.agents;
+#pragma omp parallel for schedule(static)
     for (auto& agent : agents)
-        agent = move_agent(trails, agent);
+        agent = move_agent(state.trails, agent);
     return agents;
 }
 
-auto spread(grid trails, const std::vector<agent> agents) {
-    for (auto& [pos, _, species] : agents)
+auto deposits(const simulation& state) {
+    auto trails = state.trails;
+#pragma omp parallel for schedule(static)
+    for (auto& [pos, _, species] : state.agents)
         trails[pos] += species->deposit;
     return trails;
 }
 
+// auto diffuse(const grid& trails) {
+//     auto new_trails = grid{trails.size};
+
+//     for (int y{1}; y < trails.size.y - 1; ++y) {
+//         for (int x{1}; x < trails.size.x - 1; ++x) {
+//             float v{};
+//             for (int yk{y - 1}; yk < y + 2; ++yk)
+//                 for (int xk{x - 1}; xk < x + 2; ++xk)
+//                     v += trails.at({xk, yk});
+//             new_trails.at(vec2i{x, y}) = v / 9.;
+//         }
+//     }
+
+//     for (int x{-1}; x < 1; ++x) {
+//         for (int y{0}; y < trails.size.y; ++y) {
+//             float v{};
+//             for (int yk{y - 1}; yk < y + 2; ++yk)
+//                 for (int xk{x - 1}; xk < x + 2; ++xk)
+//                     v += trails[vec2i{xk, yk}];
+//             new_trails[vec2i{x, y}] = v / 9.;
+//         }
+//     }
+
+//     for (int y{-1}; y < 1; ++y) {
+//         for (int x{0}; x < trails.size.x; ++x) {
+//             float v{};
+//             for (int yk{y - 1}; yk < y + 2; ++yk)
+//                 for (int xk{x - 1}; xk < x + 2; ++xk)
+//                     v += trails[vec2i{xk, yk}];
+//             new_trails[vec2i{x, y}] = v / 9.;
+//         }
+//     }
+
+//     return new_trails;
+// }
+
 auto diffuse(const grid& trails) {
-    auto next = grid{trails.size};
-    std::array<vec2i, 9> kv = {
-        vec2i{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {0, 0},
-        {1, 0},        {-1, 1}, {0, 1},  {1, 1},
-    };
+    auto horizontal = grid{trails.size};
 
-    for (int y{1}; y < trails.size.y - 1; ++y) {
-        for (int x{1}; x < trails.size.x - 1; ++x) {
-            float v{};
-            auto p = vec2i{x, y};
-            for (int k{}; k < 9; ++k)
-                v += trails[p + kv[k]];
-            next[p] = v / 9.;
+    for (int y{0}; y < trails.size.y; ++y) {
+        auto kernel = trails[vec2i{-1, y}] + trails.at(vec2i{0, y});
+        for (int x{0}; x < trails.size.x; ++x) {
+            auto kernel = trails[vec2i{x - 1, y}] + trails.at(vec2i{x, y}) +
+                          trails[vec2i{x + 1, y}];
+            // kernel += trails[vec2i{x + 1, y}];
+            horizontal.at(vec2i{x, y}) = kernel / 3.f;
+            // kernel -= trails[vec2i{x - 1, y}];
         }
     }
-    return next;
-}
 
-auto decay(grid trails) {
-    for (int y{1}; y < trails.size.y - 1; ++y) {
-        for (int x{1}; x < trails.size.x - 1; ++x) {
-            trails[vec2i{x, y}] *= decay_factor;
+    auto vertical = grid{trails.size};
+
+    for (int x{0}; x < horizontal.size.x; ++x) {
+        auto kernel = horizontal[vec2i{x, -1}] + horizontal.at(vec2i{x, 0});
+        for (int y{0}; y < horizontal.size.y; ++y) {
+            auto kernel = horizontal[vec2i{x, y - 1}] +
+                          horizontal.at(vec2i{x, y}) +
+                          horizontal[vec2i{x, y + 1}];
+            // kernel += horizontal[vec2i{x, y + 1}];
+            vertical.at(vec2i{x, y}) = kernel / 3.f;
+            // kernel -= horizontal[vec2i{x, y - 1}];
         }
     }
-    return trails;
+
+    return vertical;
 }
 
-auto tick(grid trails, std::vector<agent> agents) {
-    trails = spread(trails, agents);
-    agents = advance_agents(trails, agents);
-    trails = diffuse(diffuse(diffuse(trails)));
-    trails = decay(trails);
-    for(auto& agent: agents){
-        while(agent.position.x < 0) agent.position.x += trails.size.x;
-        while(agent.position.y < 0) agent.position.y += trails.size.y;
-        while(agent.position.x > trails.size.x) agent.position.x -= trails.size.x;
-        while(agent.position.y > trails.size.y) agent.position.y -= trails.size.y;
+void decay(simulation& state) {
+    for (auto& v : state.trails.cells)
+        v *= decay_factor;
+
+    for (auto& agent : state.agents) {
+        while (agent.position.x < 0)
+            agent.position.x += state.size.x;
+        while (agent.position.y < 0)
+            agent.position.y += state.size.y;
+        while ((int)agent.position.x >= state.size.x)
+            agent.position.x -= state.size.x;
+        while ((int)agent.position.y >= state.size.y)
+            agent.position.y -= state.size.y;
     }
-    return std::pair{trails, agents};
+}
+
+auto tick(simulation state) {
+    auto cost{stats().time("tick")};
+
+    {
+        auto cost{stats().time("move")};
+        state.agents = advance_agents(state);
+    }
+
+    {
+        auto cost{stats().time("deposit")};
+        state.trails = deposits(state);
+    }
+
+    {
+        auto cost{stats().time("diffuse")};
+        state.trails = diffuse(diffuse(diffuse(state.trails)));
+    }
+
+    {
+        auto cost{stats().time("decay")};
+        decay(state);
+    }
+
+    return state;
 }
 
 auto random_agent(vec2f size) {
@@ -164,162 +264,111 @@ auto random_agent(vec2f size) {
     return agent{pos, dir};
 }
 
-void export_img(const grid& trails, const std::vector<agent>&,
-                std::string filename) {
-    auto resolution = trails.size;
+struct renderer {
+    renderer(vec2i resolution)
+        : resolution(resolution), scale(.6f),
+          window(sf::VideoMode{(unsigned int)(resolution.x * scale),
+                               (unsigned int)(resolution.y * scale)},
+                 "gvr") {}
+
+    void frame() {
+        window.display();
+        window.clear();
+    }
+
+    vec2i resolution;
+    float scale;
+    sf::RenderWindow window;
+};
+
+void draw_simulation(renderer& context, const simulation& state) {
+    auto resolution = state.size;
     std::vector<unsigned char> out;
     out.resize(4 * resolution.y * resolution.x);
 
-    for (int y = 0; y < resolution.y; ++y) {
-        for (int x = 0; x < resolution.x; ++x) {
-            auto v = trails[vec2i{x, y}] * 10.;
-            v = v < 0.1 ? 0. : std::log(v) / std::log(2.);
-            v = 255 - std::clamp(0., v, 10.) * 25.5;
-            auto [r, g, b] = std::tuple<int, int, int>{v, v, v};
-            out[4 * (y * resolution.x + x)] = r;
-            out[4 * (y * resolution.x + x) + 1] = g;
-            out[4 * (y * resolution.x + x) + 2] = b;
-            out[4 * (y * resolution.x + x) + 3] = 255;
-        }
+#pragma omp parallel for schedule(static)
+    for (auto px = 0; px < state.trails.cells.size(); ++px) {
+        auto v = state.trails.cells[px];
+        v = std::sqrt(v * 10.f);
+        v = 255 - std::min(v, 10.f) * 25.5f;
+        out[4 * px] = v;
+        out[4 * px + 1] = v;
+        out[4 * px + 2] = v;
+        out[4 * px + 3] = 255;
     }
 
-    sf::Image img;
-    img.create((unsigned int)(resolution.x), (unsigned int)(resolution.y),
-               out.data());
-    img.saveToFile(filename);
+    sf::Texture texture;
+    texture.create((unsigned int)resolution.x, (unsigned int)resolution.y);
+    texture.update(out.data());
+
+    sf::Sprite view_sprite;
+    view_sprite.setTexture(texture);
+    view_sprite.setScale({context.scale, context.scale});
+    context.window.draw(view_sprite);
 }
 
 int main() {
     srand48(std::chrono::nanoseconds(
                 std::chrono::high_resolution_clock().now().time_since_epoch())
                 .count());
-    auto trails = grid({sim_width, sim_width});
-    auto agents = std::vector<agent>{};
+
+    simulation state{{sim_width, sim_width}};
+
     for (int n{}; n < initial_population; ++n)
-        agents.push_back(
-            random_agent(vec2f{(double)trails.size.x, (double)trails.size.y}));
+        state.agents.push_back(
+            random_agent(vec2f{vec2i{state.size.x, state.size.y}}));
 
-    auto resolution = trails.size;
-    float scaling = sim_width / float(trails.size.x);
-    std::vector<unsigned char> out;
-    out.resize(4 * resolution.y * resolution.x);
+    renderer display{state.size};
 
-    sf::RenderWindow window{
-        sf::VideoMode{(unsigned int)(resolution.x * scaling),
-                      (unsigned int)(resolution.y * scaling)},
-        "gvr"};
+    auto t_prev = std::chrono::high_resolution_clock::now();
 
-    auto t0 = std::chrono::high_resolution_clock::now();
-    for (int n{}; n < 10000; ++n) {
-        std::tie(trails, agents) = tick(trails, agents);
+    auto report_time = t_prev - std::chrono::seconds{1};
+    while (display.window.isOpen()) {
+        auto t_now = std::chrono::high_resolution_clock::now();
+        auto delta = t_now - t_prev;
+        {
+            auto cost{stats().time("sleep")};
+            std::this_thread::sleep_for(
+                std::chrono::microseconds(1000000) / 60 - delta);
+        }
+        t_now = std::chrono::high_resolution_clock::now();
+        delta = t_now - t_prev;
+        t_prev = t_now;
 
-        for (int y = 0; y < resolution.y; ++y) {
-            for (int x = 0; x < resolution.x; ++x) {
-                auto v = trails[vec2i{x, y}] * 10.;
-                v = v < 0.1 ? 0. : std::log(v) / std::log(2);
-                v = 255 - std::ceil(std::clamp(v, 0., 10.) * 25.5);
-                auto [r, g, b] = std::tuple<int, int, int>{v, v, v};
-                out[4 * (y * resolution.x + x)] = r;
-                out[4 * (y * resolution.x + x) + 1] = g;
-                out[4 * (y * resolution.x + x) + 2] = b;
-                out[4 * (y * resolution.x + x) + 3] = 255;
-            }
+        auto cost{stats().time("frame")};
+
+        state = tick(state);
+
+        {
+            auto cost{stats().time("render")};
+            draw_simulation(display, state);
+            display.frame();
         }
 
-        sf::Texture texture;
-        texture.create((unsigned int)resolution.x, (unsigned int)resolution.y);
-        texture.update(out.data());
-        sf::Sprite view_sprite;
-        view_sprite.setTexture(texture);
-        view_sprite.setScale({scaling, scaling});
+        if (t_now - report_time > std::chrono::seconds{3}) {
+            std::vector<std::pair<double, const char*>> best;
+            for (const auto& [name, _] : stats().costs)
+                best.push_back({stats().avg(name), name});
 
-        window.clear();
-        window.draw(view_sprite);
-        window.display();
+            std::sort(best.rbegin(), best.rend());
+            for (const auto& [cost, name] : best) {
+                auto percent = cost / (stats().avg("frame")) * 100.;
+                if (cost > 1000)
+                    fmt::print("{:6.1f}ms", cost / 1000.);
+                else
+                    fmt::print("{:6.1f}µs", cost);
+                fmt::print(" {:<12} {:5.1f}%\n", name, percent);
+            }
+            fmt::print("\n");
 
-        auto now = std::chrono::high_resolution_clock::now();
-        auto delta = now  - t0;
-        t0 = now;
-
-        std::this_thread::sleep_for(std::chrono::nanoseconds(1000000000 / 60) -
-                                    delta);
+            report_time = t_now;
+        }
 
         sf::Event event;
-        while (window.pollEvent(event))
+        while (display.window.pollEvent(event))
             if (event.type == sf::Event::Closed ||
                 (event.type == sf::Event::KeyPressed &&
                  event.key.code == sf::Keyboard::Escape))
-                window.close();
-
-        if (not window.isOpen())
-            break;
-
-        // export_img(trails, agents, fmt::format("vid/f{:0>3}.png", n));
+                display.window.close();
     }
 }
-
-// The model postulated by Jones employs both an agent-based layer (the data
-// map) and a continuum-based layer (the trail map). The data map consists of
-// many particles, while the trail map consists of a 2D grid of intensities
-// (similar to a pixel-based image). The data and trail map in turn affect each
-// other; the particles of the data map deposit material onto the trail map,
-// while those same particles sense values from the trail map in order to
-// determine aspects of their locomotion.
-
-// Each particle in the simulation has a heading angle, a location, and three
-// sensors (front left, front, front right). The sensor readings effect the
-// heading of the particle, causing it to rotate left or right (or stay facing
-// the same direction). The trail map undergoes a diffusion and decay process
-// every simulation step. A simple 3-by-3 mean filter is applied to simulate
-// diffusion of the particle trail, and then a multiplicative decay factor is
-// applied to simulate trail dissipation over time. The diagram below describes
-// the six sub-steps of a simulation tick.
-
-// Many of the parameters of this simulation are configurable, including sensor
-// distance, sensor size, sensor angle, step size, rotation angle, deposition
-// amount, decay factor, deposit size, diffuse size, decay factor, etc. For a
-// more detailed description check out the original paper.
-
-// There are several substantial differences between the model as described by
-// Jones and my implementation. In Jones’s original paper there is a collision
-// detection step that ensures that there is at most one particle in each grid
-// square. For my implementations I usually ignored this step, preferring the
-// patterns that arose without it. However, this step is crucial for exact
-// mimicry of the behavior of Physarum polycephalum, as it approximates a sort
-// of conservation of matter. Also (conveniently) this collision detection
-// removes any sort of sequential dependence, allowing for increased
-// computational parallelism.
-
-// std::cerr << (std::chrono::high_resolution_clock::now() - t0).count() /
-//                  1000000.
-//           << "ms\n";
-
-// (define (box-blur line)
-//   (define kernel 3)
-//   (define radius (fx/ kernel 2))
-//   (define width (vector-length line))
-//   (let ([line* (make-vector width 0.)])
-//     (let slide ([r (sum (map (partial vector-ref line) (iota kernel)))]
-//                 [x 0])
-//       (vector-set! line* (fx+ x radius) (fl/ r (inexact kernel)))
-//       (if (>= x (fx- width kernel)) line*
-//           (slide (fl+ r (vector-ref line (fx+ x kernel))
-//                     (fl- (vector-ref line x)))
-//                  (inc x))))))
-
-// (define (transpose M)
-//   (let* ([size (vector-length M)]
-//          [N (make-grid size)])
-//     (do ([y 0 (inc y)]) ((>= y size) N)
-//       (let ([row (vector-ref M y)])
-//         (do ([x 0 (inc x)]) ((>= x size))
-//           (vector-set! (vector-ref N x) y
-//                        (vector-ref row x)))))))
-
-// (define (diffuse trails)
-//   (let ([gauss (compose box-blur box-blur box-blur)])
-//     (transpose
-//      (list->vector
-//       (map gauss
-//            ((compose vector->list transpose list->vector)
-//             (map gauss (vector->list trails))))))))
