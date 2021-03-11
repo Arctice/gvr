@@ -76,7 +76,7 @@ private:
     }
 };
 
-struct species{
+struct species {
     double speed;
     double rotation_angle;
     double sensor_angle;
@@ -95,7 +95,7 @@ auto default_species() {
 }
 
 constexpr double decay_factor = .68;
-constexpr int sim_width = 1600;
+constexpr int sim_width = 2000;
 constexpr int initial_population = 100000;
 
 struct agent {
@@ -111,10 +111,40 @@ struct simulation {
     std::vector<agent> agents{};
 };
 
-agent move_agent(const grid& trails, agent a) {
+namespace apx {
+
+double cos(double x) {
+    constexpr auto f4 = 2 * 3 * 4;
+    constexpr auto f6 = f4 * 5 * 6;
+    auto x2 = x * x;
+    auto x4 = x2 * x2;
+    auto x6 = x4 * x2;
+    return 1. + x2 * (-1. / 2) + x4 * (1. / f4) + x6 * (-1. / f6);
+}
+
+double sin(double x) {
+    constexpr auto f3 = 2 * 3;
+    constexpr auto f5 = f3 * 4 * 5;
+    constexpr auto f7 = f5 * 6 * 7;
+    auto x2 = x * x;
+    auto x3 = x2 * x;
+    auto x5 = x3 * x2;
+    auto x7 = x5 * x2;
+    return x + x3 * (-1. / f3) + x5 * (1. / f5) + x7 * (-1. / f7);
+}
+
+vec2f rotate(vec2f v, double a) {
+    auto s = apx::sin(a);
+    auto c = apx::cos(a);
+    return {v.x * c - v.y * s, v.x * s + v.y * c};
+}
+
+}; // namespace apx
+
+void move_agent(const grid& trails, agent& a) {
     auto fwd_sensor = a.direction * a.species->sensor_distance;
-    auto left_sensor = fwd_sensor.rotated(a.species->sensor_angle * -1);
-    auto right_sensor = fwd_sensor.rotated(a.species->sensor_angle);
+    auto left_sensor = apx::rotate(fwd_sensor, a.species->sensor_angle * -1);
+    auto right_sensor = apx::rotate(fwd_sensor, a.species->sensor_angle);
 
     auto fwd_trail = trails[a.position + fwd_sensor];
     auto left_trail = trails[a.position + left_sensor];
@@ -122,23 +152,21 @@ agent move_agent(const grid& trails, agent a) {
 
     if (left_trail > fwd_trail and right_trail > fwd_trail) {
         auto side = (drand48() < .5) ? -1 : 1;
-        a.direction = a.direction.rotated(a.species->rotation_angle * side);
+        a.direction =
+            apx::rotate(a.direction, a.species->rotation_angle * side);
     }
     else if (left_trail > fwd_trail)
-        a.direction = a.direction.rotated(a.species->rotation_angle * -1);
+        a.direction = apx::rotate(a.direction, a.species->rotation_angle * -1);
     else if (right_trail > fwd_trail)
-        a.direction = a.direction.rotated(a.species->rotation_angle);
+        a.direction = apx::rotate(a.direction, a.species->rotation_angle);
 
     a.position += a.direction * a.species->speed;
-    return a;
 }
 
-auto advance_agents(const simulation& state) {
-    auto agents = state.agents;
+void advance_agents(simulation& state) {
 #pragma omp parallel for schedule(static)
-    for (auto& agent : agents)
-        agent = move_agent(state.trails, agent);
-    return agents;
+    for (auto& agent : state.agents)
+        move_agent(state.trails, agent);
 }
 
 auto deposits(const simulation& state) {
@@ -149,71 +177,41 @@ auto deposits(const simulation& state) {
     return trails;
 }
 
-// auto diffuse(const grid& trails) {
-//     auto new_trails = grid{trails.size};
-
-//     for (int y{1}; y < trails.size.y - 1; ++y) {
-//         for (int x{1}; x < trails.size.x - 1; ++x) {
-//             float v{};
-//             for (int yk{y - 1}; yk < y + 2; ++yk)
-//                 for (int xk{x - 1}; xk < x + 2; ++xk)
-//                     v += trails.at({xk, yk});
-//             new_trails.at(vec2i{x, y}) = v / 9.;
-//         }
-//     }
-
-//     for (int x{-1}; x < 1; ++x) {
-//         for (int y{0}; y < trails.size.y; ++y) {
-//             float v{};
-//             for (int yk{y - 1}; yk < y + 2; ++yk)
-//                 for (int xk{x - 1}; xk < x + 2; ++xk)
-//                     v += trails[vec2i{xk, yk}];
-//             new_trails[vec2i{x, y}] = v / 9.;
-//         }
-//     }
-
-//     for (int y{-1}; y < 1; ++y) {
-//         for (int x{0}; x < trails.size.x; ++x) {
-//             float v{};
-//             for (int yk{y - 1}; yk < y + 2; ++yk)
-//                 for (int xk{x - 1}; xk < x + 2; ++xk)
-//                     v += trails[vec2i{xk, yk}];
-//             new_trails[vec2i{x, y}] = v / 9.;
-//         }
-//     }
-
-//     return new_trails;
-// }
-
 auto diffuse(const grid& trails) {
-    auto horizontal = grid{trails.size};
+    auto new_trails = grid{trails.size};
 
-    for (int y{0}; y < trails.size.y; ++y) {
-        auto kernel = trails[vec2i{-1, y}] + trails.at(vec2i{0, y});
+    // #pragma omp parallel for schedule(static)
+    for (int y = 1; y < trails.size.y - 1; ++y) {
+        for (int x{1}; x < trails.size.x - 1; ++x) {
+            float v{};
+            for (int yk{y - 1}; yk < y + 2; ++yk)
+                for (int xk{x - 1}; xk < x + 2; ++xk)
+                    v += trails.at({xk, yk});
+            new_trails.at(vec2i{x, y}) = v / 9.;
+        }
+    }
+
+    for (int x{-1}; x < 1; ++x) {
+        for (int y{0}; y < trails.size.y; ++y) {
+            float v{};
+            for (int yk{y - 1}; yk < y + 2; ++yk)
+                for (int xk{x - 1}; xk < x + 2; ++xk)
+                    v += trails[vec2i{xk, yk}];
+            new_trails[vec2i{x, y}] = v / 9.;
+        }
+    }
+
+    for (int y{-1}; y < 1; ++y) {
         for (int x{0}; x < trails.size.x; ++x) {
-            auto kernel = trails[vec2i{x - 1, y}] + trails.at(vec2i{x, y}) +
-                          trails[vec2i{x + 1, y}];
-            // kernel += trails[vec2i{x + 1, y}];
-            horizontal.at(vec2i{x, y}) = kernel / 3.f;
-            // kernel -= trails[vec2i{x - 1, y}];
+            float v{};
+            for (int yk{y - 1}; yk < y + 2; ++yk)
+                for (int xk{x - 1}; xk < x + 2; ++xk)
+                    v += trails[vec2i{xk, yk}];
+            new_trails[vec2i{x, y}] = v / 9.;
         }
     }
 
-    auto vertical = grid{trails.size};
-
-    for (int x{0}; x < horizontal.size.x; ++x) {
-        auto kernel = horizontal[vec2i{x, -1}] + horizontal.at(vec2i{x, 0});
-        for (int y{0}; y < horizontal.size.y; ++y) {
-            auto kernel = horizontal[vec2i{x, y - 1}] +
-                          horizontal.at(vec2i{x, y}) +
-                          horizontal[vec2i{x, y + 1}];
-            // kernel += horizontal[vec2i{x, y + 1}];
-            vertical.at(vec2i{x, y}) = kernel / 3.f;
-            // kernel -= horizontal[vec2i{x, y - 1}];
-        }
-    }
-
-    return vertical;
+    return new_trails;
 }
 
 void decay(simulation& state) {
@@ -237,7 +235,7 @@ auto tick(simulation state) {
 
     {
         auto cost{stats().time("move")};
-        state.agents = advance_agents(state);
+        advance_agents(state);
     }
 
     {
@@ -266,10 +264,13 @@ auto random_agent(vec2f size) {
 
 struct renderer {
     renderer(vec2i resolution)
-        : resolution(resolution), scale(.6f),
+        : resolution(resolution), scale(.5f),
           window(sf::VideoMode{(unsigned int)(resolution.x * scale),
                                (unsigned int)(resolution.y * scale)},
-                 "gvr") {}
+                 "gvr") {
+        sim_draw_buffer.resize(4 * resolution.y * resolution.x);
+        std::fill(sim_draw_buffer.begin(), sim_draw_buffer.end(), 255);
+    }
 
     void frame() {
         window.display();
@@ -279,27 +280,25 @@ struct renderer {
     vec2i resolution;
     float scale;
     sf::RenderWindow window;
+    std::vector<unsigned char> sim_draw_buffer;
 };
 
 void draw_simulation(renderer& context, const simulation& state) {
     auto resolution = state.size;
-    std::vector<unsigned char> out;
-    out.resize(4 * resolution.y * resolution.x);
 
 #pragma omp parallel for schedule(static)
     for (auto px = 0; px < state.trails.cells.size(); ++px) {
         auto v = state.trails.cells[px];
         v = std::sqrt(v * 10.f);
         v = 255 - std::min(v, 10.f) * 25.5f;
-        out[4 * px] = v;
-        out[4 * px + 1] = v;
-        out[4 * px + 2] = v;
-        out[4 * px + 3] = 255;
+        context.sim_draw_buffer[4 * px] = v;
+        context.sim_draw_buffer[4 * px + 1] = v;
+        context.sim_draw_buffer[4 * px + 2] = v;
     }
 
     sf::Texture texture;
     texture.create((unsigned int)resolution.x, (unsigned int)resolution.y);
-    texture.update(out.data());
+    texture.update(context.sim_draw_buffer.data());
 
     sf::Sprite view_sprite;
     view_sprite.setTexture(texture);

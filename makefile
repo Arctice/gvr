@@ -1,5 +1,5 @@
 core:
-	clang++ -std=c++17 -O2 -march=native -fopenmp=libiomp5 -lomp5 \
+	clang++ -std=c++17 -O2 -ffast-math -march=native -fopenmp=libiomp5 -lomp5 \
 	-Wall -Wpedantic \
 	gvr.cpp -o gvr \
 	-pthread -latomic \
