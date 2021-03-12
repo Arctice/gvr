@@ -15,6 +15,9 @@
 #include <SFML/Graphics.hpp>
 #include <fmt/core.h>
 
+#include "imgui/imgui.h"
+#include "imgui/imgui-SFML.h"
+
 struct runtime_statistics& stats();
 
 struct runtime_statistics {
@@ -77,26 +80,21 @@ private:
 };
 
 struct species {
-    double speed;
-    double rotation_angle;
-    double sensor_angle;
-    double sensor_distance;
-    double deposit;
+    float speed;
+    float rotation_angle;
+    float sensor_angle;
+    float sensor_distance;
+    float deposit;
 };
 
 auto default_species() {
     static species self;
-    self.speed = 3;
-    self.rotation_angle = 26. * pi / 180.;
-    self.sensor_angle = 12. * pi / 180.;
-    self.sensor_distance = 25;
-    self.deposit = 1;
     return &self;
 }
 
-constexpr double decay_factor = .88;
-constexpr int sim_width = 800;
-constexpr int initial_population = 2000;
+constexpr int sim_width = 1200;
+constexpr int initial_population = 50000;
+float decay_factor = .88;
 
 struct agent {
     vec2f position;
@@ -287,7 +285,7 @@ auto tick(simulation state) {
 
 struct renderer {
     renderer(vec2i resolution)
-        : resolution(resolution), scale(.6f),
+        : resolution(resolution), scale(1.f),
           window(sf::VideoMode{(unsigned int)(resolution.x * scale),
                                (unsigned int)(resolution.y * scale)},
                  "gvr") {
@@ -334,6 +332,15 @@ int main() {
                 std::chrono::high_resolution_clock().now().time_since_epoch())
                 .count());
 
+    {
+        auto species = default_species();
+        species->speed = 3;
+        species->rotation_angle = 26. * pi / 180.;
+        species->sensor_angle = 12. * pi / 180.;
+        species->sensor_distance = 25;
+        species->deposit = 1;
+    }
+
     simulation state{{sim_width, sim_width}};
 
     for (int n{}; n < initial_population; ++n)
@@ -343,6 +350,8 @@ int main() {
     renderer display{state.size};
 
     auto t_prev = std::chrono::high_resolution_clock::now();
+
+    ImGui::SFML::Init(display.window);
 
     auto report_time = t_prev - std::chrono::seconds{1};
     while (display.window.isOpen()) {
@@ -364,8 +373,42 @@ int main() {
         {
             auto cost{stats().time("render")};
             draw_simulation(display, state);
-            display.frame();
         }
+
+        {
+            auto cost{stats().time("gui")};
+            ImGui::SFML::Update(display.window,
+                                sf::milliseconds(delta.count() / 1000.));
+
+            ImGui::Begin("Config");
+
+            ImGui::SliderFloat("Decay", &decay_factor, 0.01, 0.999);
+
+            auto species = default_species();
+            ImGui::SliderFloat("Speed", &species->speed, 1.6, 40);
+
+            float rotation_angle = species->rotation_angle * (180. / pi);
+            ImGui::SliderFloat("Rotation", &rotation_angle, 1, 89);
+            species->rotation_angle = rotation_angle * (pi / 180.);
+
+            float sensor_angle = species->sensor_angle * (180. / pi);
+            ImGui::SliderFloat("Sensor angle", &sensor_angle, 1, 89);
+            species->sensor_angle = sensor_angle * (pi / 180.);
+
+            ImGui::SliderFloat("Sensor Distance", &species->sensor_distance, 1,
+                               100);
+
+            ImGui::SliderFloat("Deposit", &species->deposit, 0.1, 10);
+
+            ImGui::Button("");
+            ImGui::End();
+
+            ImGui::EndFrame();
+
+            ImGui::SFML::Render(display.window);
+        }
+
+        display.frame();
 
         if (t_now - report_time > std::chrono::seconds{3}) {
             std::vector<std::pair<double, const char*>> best;
@@ -387,10 +430,16 @@ int main() {
         }
 
         sf::Event event;
-        while (display.window.pollEvent(event))
+        while (display.window.pollEvent(event)) {
             if (event.type == sf::Event::Closed ||
                 (event.type == sf::Event::KeyPressed &&
-                 event.key.code == sf::Keyboard::Escape))
+                 event.key.code == sf::Keyboard::Escape)) {
                 display.window.close();
+                ImGui::SFML::Shutdown();
+                break;
+            }
+
+            ImGui::SFML::ProcessEvent(event);
+        }
     }
 }
