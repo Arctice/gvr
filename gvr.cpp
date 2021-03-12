@@ -49,24 +49,24 @@ runtime_statistics& stats() {
     return self;
 }
 
-struct grid {
+template <typename T = float> struct grid {
     grid(vec2i size) : size(size) {
         cells.resize(size.x * size.y);
-        std::fill(cells.begin(), cells.end(), 0);
+        std::fill(cells.begin(), cells.end(), T{});
     }
 
     vec2i size;
-    std::vector<float> cells;
+    std::vector<T> cells;
 
-    const float& at(vec2i v) const { return cells[v.y * size.x + v.x]; }
-    float& at(vec2i v) { return cells[v.y * size.x + v.x]; }
+    const T& at(vec2i v) const { return cells[v.y * size.x + v.x]; }
+    T& at(vec2i v) { return cells[v.y * size.x + v.x]; }
 
-    const float& operator[](vec2i v) const { return at(unwrap(v)); }
-    float& operator[](vec2i v) { return at(unwrap(v)); }
-    float& operator[](vec2f v) {
+    const T& operator[](vec2i v) const { return at(unwrap(v)); }
+    T& operator[](vec2i v) { return at(unwrap(v)); }
+    T& operator[](vec2f v) {
         return (*this)[vec2i{(int)std::floor(v.x), (int)std::floor(v.y)}];
     }
-    const float& operator[](vec2f v) const {
+    const T& operator[](vec2f v) const {
         return (*this)[vec2i{(int)std::floor(v.x), (int)std::floor(v.y)}];
     }
 
@@ -86,17 +86,17 @@ struct species {
 
 auto default_species() {
     static species self;
-    self.speed = 5;
-    self.rotation_angle = 18. * pi / 180.;
-    self.sensor_angle = 12 * pi / 180.;
-    self.sensor_distance = 20;
-    self.deposit = 1.8;
+    self.speed = 3;
+    self.rotation_angle = 26. * pi / 180.;
+    self.sensor_angle = 12. * pi / 180.;
+    self.sensor_distance = 25;
+    self.deposit = 1;
     return &self;
 }
 
-constexpr double decay_factor = .68;
-constexpr int sim_width = 2000;
-constexpr int initial_population = 100000;
+constexpr double decay_factor = .88;
+constexpr int sim_width = 800;
+constexpr int initial_population = 2000;
 
 struct agent {
     vec2f position;
@@ -104,11 +104,14 @@ struct agent {
     const species* species{default_species()};
 };
 
+enum class collision : char { unoccupied, occupied, moved };
+
 struct simulation {
-    simulation(vec2i size) : size(size), trails(size) {}
+    simulation(vec2i size) : size(size), trails(size), collisions{size} {}
     vec2i size;
-    grid trails;
+    grid<float> trails;
     std::vector<agent> agents{};
+    grid<collision> collisions;
 };
 
 namespace apx {
@@ -141,14 +144,23 @@ vec2f rotate(vec2f v, double a) {
 
 }; // namespace apx
 
-void move_agent(const grid& trails, agent& a) {
+auto random_direction() {
+    return vec2f{1.0, 0.}.rotated(drand48() * std::asin(-1) * 4);
+}
+
+auto random_agent(vec2f size) {
+    auto pos = vec2f{drand48() * size.x, drand48() * size.y};
+    return agent{pos, random_direction()};
+}
+
+void move_agent(simulation& state, agent& a) {
     auto fwd_sensor = a.direction * a.species->sensor_distance;
     auto left_sensor = apx::rotate(fwd_sensor, a.species->sensor_angle * -1);
     auto right_sensor = apx::rotate(fwd_sensor, a.species->sensor_angle);
 
-    auto fwd_trail = trails[a.position + fwd_sensor];
-    auto left_trail = trails[a.position + left_sensor];
-    auto right_trail = trails[a.position + right_sensor];
+    auto fwd_trail = state.trails[a.position + fwd_sensor];
+    auto left_trail = state.trails[a.position + left_sensor];
+    auto right_trail = state.trails[a.position + right_sensor];
 
     if (left_trail > fwd_trail and right_trail > fwd_trail) {
         auto side = (drand48() < .5) ? -1 : 1;
@@ -160,24 +172,41 @@ void move_agent(const grid& trails, agent& a) {
     else if (right_trail > fwd_trail)
         a.direction = apx::rotate(a.direction, a.species->rotation_angle);
 
-    a.position += a.direction * a.species->speed;
+    auto move = a.position + a.direction * a.species->speed;
+    if (state.collisions[move] == collision::unoccupied) {
+        a.position = move;
+        state.collisions[a.position] = collision::moved;
+    }
+    else {
+        a.direction = random_direction();
+    }
 }
 
 void advance_agents(simulation& state) {
+    std::random_shuffle(state.agents.begin(), state.agents.end());
+    std::fill(state.collisions.cells.begin(), state.collisions.cells.end(),
+              collision::unoccupied);
+    for (auto& agent : state.agents) {
+        state.collisions[agent.position] = collision::occupied;
+    }
+
 #pragma omp parallel for schedule(static)
-    for (auto& agent : state.agents)
-        move_agent(state.trails, agent);
+    for (auto& agent : state.agents) {
+        move_agent(state, agent);
+    }
 }
 
 auto deposits(const simulation& state) {
     auto trails = state.trails;
 #pragma omp parallel for schedule(static)
-    for (auto& [pos, _, species] : state.agents)
-        trails[pos] += species->deposit;
+    for (auto& [pos, _, species] : state.agents) {
+        if (state.collisions[pos] == collision::moved)
+            trails[pos] += species->deposit;
+    }
     return trails;
 }
 
-auto diffuse(const grid& trails) {
+auto diffuse(const grid<float>& trails) {
     auto new_trails = grid{trails.size};
 
     // #pragma omp parallel for schedule(static)
@@ -245,7 +274,7 @@ auto tick(simulation state) {
 
     {
         auto cost{stats().time("diffuse")};
-        state.trails = diffuse(diffuse(diffuse(state.trails)));
+        state.trails = diffuse(state.trails);
     }
 
     {
@@ -256,15 +285,9 @@ auto tick(simulation state) {
     return state;
 }
 
-auto random_agent(vec2f size) {
-    auto pos = vec2f{drand48() * size.x, drand48() * size.y};
-    auto dir = vec2f{1.0, 0.}.rotated(drand48() * std::asin(-1) * 4);
-    return agent{pos, dir};
-}
-
 struct renderer {
     renderer(vec2i resolution)
-        : resolution(resolution), scale(.5f),
+        : resolution(resolution), scale(.6f),
           window(sf::VideoMode{(unsigned int)(resolution.x * scale),
                                (unsigned int)(resolution.y * scale)},
                  "gvr") {
@@ -289,8 +312,8 @@ void draw_simulation(renderer& context, const simulation& state) {
 #pragma omp parallel for schedule(static)
     for (auto px = 0; px < state.trails.cells.size(); ++px) {
         auto v = state.trails.cells[px];
-        v = std::sqrt(v * 10.f);
-        v = 255 - std::min(v, 10.f) * 25.5f;
+        v = std::sqrt(v * 100.f);
+        v = std::min(v, 10.f) * 25.5f;
         context.sim_draw_buffer[4 * px] = v;
         context.sim_draw_buffer[4 * px + 1] = v;
         context.sim_draw_buffer[4 * px + 2] = v;
@@ -327,8 +350,8 @@ int main() {
         auto delta = t_now - t_prev;
         {
             auto cost{stats().time("sleep")};
-            std::this_thread::sleep_for(
-                std::chrono::microseconds(1000000) / 60 - delta);
+            // std::this_thread::sleep_for(
+            //     std::chrono::microseconds(1000000) / 60 - delta);
         }
         t_now = std::chrono::high_resolution_clock::now();
         delta = t_now - t_prev;
