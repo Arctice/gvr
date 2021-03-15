@@ -93,8 +93,8 @@ auto default_species() {
     return &self;
 }
 
-constexpr int sim_width = 1200;
-constexpr int initial_population = 50000;
+constexpr int sim_width = 1000;
+constexpr int initial_population = 0;
 float decay_factor = .88;
 
 struct agent {
@@ -178,7 +178,6 @@ void move_agent(simulation& state, agent& a) {
         a.direction = random_direction();
     }
     else {
-        state.collisions[a.position] = collision::unoccupied;
         state.collisions[move] = collision::moved;
         a.position = move;
     }
@@ -244,8 +243,11 @@ auto diffuse(const grid<float>& trails) {
 }
 
 void decay(simulation& state) {
-    for (auto& v : state.trails.cells)
+    for (auto& v : state.trails.cells) {
         v *= decay_factor;
+        if (v < .001)
+            v = 0;
+    }
 
     for (auto& agent : state.agents) {
         while (agent.position.x < 0)
@@ -286,12 +288,12 @@ auto tick(simulation state) {
 }
 
 struct renderer {
-    renderer(vec2i resolution)
-        : resolution(resolution), scale(1.f),
-          window(sf::VideoMode{(unsigned int)(resolution.x * scale),
-                               (unsigned int)(resolution.y * scale)},
+    renderer(vec2i size)
+        : scale(1f), resolution(size * scale),
+          window(sf::VideoMode{(unsigned int)(resolution.x),
+                               (unsigned int)(resolution.y)},
                  "gvr") {
-        sim_draw_buffer.resize(4 * resolution.y * resolution.x);
+        sim_draw_buffer.resize(4 * size.y * size.x);
         std::fill(sim_draw_buffer.begin(), sim_draw_buffer.end(), 255);
     }
 
@@ -300,8 +302,8 @@ struct renderer {
         window.clear();
     }
 
-    vec2i resolution;
     float scale;
+    vec2i resolution;
     sf::RenderWindow window;
     std::vector<unsigned char> sim_draw_buffer;
 };
@@ -362,8 +364,8 @@ int main() {
         auto delta = t_now - t_prev;
         {
             auto cost{stats().time("sleep")};
-            // std::this_thread::sleep_for(
-            //     std::chrono::microseconds(1000000) / 60 - delta);
+            std::this_thread::sleep_for(
+                std::chrono::microseconds(1000000) / 60 - delta);
         }
         t_now = std::chrono::high_resolution_clock::now();
         delta = t_now - t_prev;
@@ -390,13 +392,10 @@ int main() {
             auto species = default_species();
             ImGui::SliderFloat("Speed", &species->speed, 1.6, 40);
 
-            float rotation_angle = species->rotation_angle * (180. / pi);
-            ImGui::SliderFloat("Rotation", &rotation_angle, 1, 89);
-            species->rotation_angle = rotation_angle * (pi / 180.);
-
-            float sensor_angle = species->sensor_angle * (180. / pi);
-            ImGui::SliderFloat("Sensor angle", &sensor_angle, 1, 89);
-            species->sensor_angle = sensor_angle * (pi / 180.);
+            ImGui::SliderAngle("Rotation angle", &species->rotation_angle, 1.f, 89.f,
+                               "%.0f deg", 0);
+            ImGui::SliderAngle("Sensor angle", &species->sensor_angle, 1.f, 89.f,
+                               "%.0f deg", 0);
 
             ImGui::SliderFloat("Sensor Distance", &species->sensor_distance, 1,
                                100);
@@ -405,6 +404,25 @@ int main() {
 
             ImGui::SliderFloat("Collision rate", &species->collision_rate, 0.0,
                                1.0);
+
+            if (ImGui::IsMouseDown(0) and !ImGui::GetIO().WantCaptureMouse) {
+                auto [x, y] = ImGui::GetMousePos();
+                auto inbounds = x > 0 && y > 0 && x < display.resolution.x &&
+                                y < display.resolution.y;
+                if (inbounds) {
+                    auto a = random_agent({});
+                    a.position = {x / display.scale, y / display.scale};
+                    for (int n{}; n < 100; ++n)
+                        state.agents.push_back(a);
+                }
+            }
+
+            if (ImGui::IsMouseDown(1) and !ImGui::GetIO().WantCaptureMouse) {
+                auto count = state.agents.size() / 10 + 1;
+                for (int n{}; n < count; ++n)
+                    if (!state.agents.empty())
+                        state.agents.pop_back();
+            }
 
             ImGui::End();
             ImGui::EndFrame();
