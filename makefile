@@ -1,6 +1,6 @@
-flags = -std=c++17 -Wall -Wpedantic -ffast-math -march=native -I./imgui
+flags = -std=c++17 -Wall -Wpedantic -ffast-math -march=native -fopenmp=libiomp5 -I./imgui
 
-libs = 	-fopenmp=libiomp5 -lomp5 -pthread -latomic \
+libs = 	-lomp5 -pthread -latomic \
 	-lsfml-window -lsfml-graphics -lsfml-system -lfmt -lGL
 
 imgui = imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp imgui/imgui-SFML.cpp
