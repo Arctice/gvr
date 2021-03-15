@@ -1,20 +1,23 @@
-dev:
-	clang++ -std=c++17 -O0 -ffast-math -march=native -fopenmp=libiomp5 -lomp5 \
-	-Wall -Wpedantic -fno-omit-frame-pointer \
-	 -I./imgui imgui/*.cpp \
-	gvr.cpp -o gvr \
-	-pthread -latomic \
+flags = -std=c++17 -Wall -Wpedantic -ffast-math -march=native -I./imgui
+
+libs = 	-fopenmp=libiomp5 -lomp5 -pthread -latomic \
 	-lsfml-window -lsfml-graphics -lsfml-system -lfmt -lGL
-core:
-	clang++ -std=c++17 -O2 -ffast-math -march=native -flto -fopenmp=libiomp5 -lomp5 \
-	 -I./imgui imgui/*.cpp \
-	gvr.cpp -o gvr \
-	-pthread -latomic \
-	-lsfml-window -lsfml-graphics -lsfml-system -lfmt -lGL
-debug:
-	clang++ -std=c++17 -O1 -march=native -lomp5 \
-	-fsanitize=undefined,address -g -fno-omit-frame-pointer \
-	-Wall -Wpedantic \
-	gvr.cpp -o gvr \
-	-pthread -latomic \
-	-lsfml-window -lsfml-graphics -lsfml-system -lfmt
+
+imgui = imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp imgui/imgui-SFML.cpp
+src = gvr.cpp  ${imgui}
+objs=$(src:.cpp=.o)
+
+%.o : %.cpp
+	clang++ ${flags} -c -o $@ $<
+
+build: $(objs)
+	clang++ ${flags} -o gvr ${objs} ${libs}
+
+clean:
+	rm gvr gvr.o imgui/*.o
+
+core: flags += -O2
+core: build
+
+debug: flags += -fsanitize=undefined,address -g -fno-omit-frame-pointer
+debug: build

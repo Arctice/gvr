@@ -85,6 +85,7 @@ struct species {
     float sensor_angle;
     float sensor_distance;
     float deposit;
+    float collision_rate;
 };
 
 auto default_species() {
@@ -171,12 +172,15 @@ void move_agent(simulation& state, agent& a) {
         a.direction = apx::rotate(a.direction, a.species->rotation_angle);
 
     auto move = a.position + a.direction * a.species->speed;
-    if (state.collisions[move] == collision::unoccupied) {
-        a.position = move;
-        state.collisions[a.position] = collision::moved;
+    auto collision = state.collisions[move] != collision::unoccupied &&
+                     (drand48() < a.species->collision_rate);
+    if (collision) {
+        a.direction = random_direction();
     }
     else {
-        a.direction = random_direction();
+        state.collisions[a.position] = collision::unoccupied;
+        state.collisions[move] = collision::moved;
+        a.position = move;
     }
 }
 
@@ -188,7 +192,6 @@ void advance_agents(simulation& state) {
         state.collisions[agent.position] = collision::occupied;
     }
 
-#pragma omp parallel for schedule(static)
     for (auto& agent : state.agents) {
         move_agent(state, agent);
     }
@@ -207,7 +210,6 @@ auto deposits(const simulation& state) {
 auto diffuse(const grid<float>& trails) {
     auto new_trails = grid{trails.size};
 
-    // #pragma omp parallel for schedule(static)
     for (int y = 1; y < trails.size.y - 1; ++y) {
         for (int x{1}; x < trails.size.x - 1; ++x) {
             float v{};
@@ -339,6 +341,7 @@ int main() {
         species->sensor_angle = 12. * pi / 180.;
         species->sensor_distance = 25;
         species->deposit = 1;
+        species->collision_rate = 1.0;
     }
 
     simulation state{{sim_width, sim_width}};
@@ -400,9 +403,10 @@ int main() {
 
             ImGui::SliderFloat("Deposit", &species->deposit, 0.1, 10);
 
-            ImGui::Button("");
-            ImGui::End();
+            ImGui::SliderFloat("Collision rate", &species->collision_rate, 0.0,
+                               1.0);
 
+            ImGui::End();
             ImGui::EndFrame();
 
             ImGui::SFML::Render(display.window);
