@@ -217,19 +217,31 @@ auto diffuse(const grid<float>& trails) {
     for (int y = 1; y < trails.size.y - 1; ++y) {
         for (int x{1}; x < trails.size.x - 1; ++x) {
             float v{};
-            for (int yk{y - 1}; yk < y + 2; ++yk)
-                for (int xk{x - 1}; xk < x + 2; ++xk)
-                    v += trails.at({xk, yk});
-            new_trails.at(vec2i{x, y}) = v / 9.f;
+            v += trails.at({x + 1, y - 1}) * (1 / 16.f);
+            v += trails.at({x, y - 1}) * (1 / 8.f);
+            v += trails.at({x - 1, y - 1}) * (1 / 16.f);
+            v += trails.at({x + 1, y}) * (1 / 8.f);
+            v += trails.at({x, y}) * (1 / 4.f);
+            v += trails.at({x - 1, y}) * (1 / 8.f);
+            v += trails.at({x + 1, y + 1}) * (1 / 16.f);
+            v += trails.at({x, y + 1}) * (1 / 8.f);
+            v += trails.at({x - 1, y + 1}) * (1 / 16.f);
+            new_trails.at(vec2i{x, y}) = v;
         }
     }
 
-    for (int x{-1}; x < 1; ++x) {
-        for (int y{0}; y < trails.size.y; ++y) {
+    for (int y{0}; y < trails.size.y; ++y) {
+        for (int x{-1}; x < 1; ++x) {
             float v{};
-            for (int yk{y - 1}; yk < y + 2; ++yk)
-                for (int xk{x - 1}; xk < x + 2; ++xk)
-                    v += trails[vec2i{xk, yk}];
+            v += trails[vec2i{x + 1, y - 1}] * (1 / 16.f);
+            v += trails[vec2i{x, y - 1}] * (1 / 8.f);
+            v += trails[vec2i{x - 1, y - 1}] * (1 / 16.f);
+            v += trails[vec2i{x + 1, y}] * (1 / 8.f);
+            v += trails[vec2i{x, y}] * (1 / 4.f);
+            v += trails[vec2i{x - 1, y}] * (1 / 8.f);
+            v += trails[vec2i{x + 1, y + 1}] * (1 / 16.f);
+            v += trails[vec2i{x, y + 1}] * (1 / 8.f);
+            v += trails[vec2i{x - 1, y + 1}] * (1 / 16.f);
             new_trails[vec2i{x, y}] = v / 9.f;
         }
     }
@@ -237,9 +249,15 @@ auto diffuse(const grid<float>& trails) {
     for (int y{-1}; y < 1; ++y) {
         for (int x{0}; x < trails.size.x; ++x) {
             float v{};
-            for (int yk{y - 1}; yk < y + 2; ++yk)
-                for (int xk{x - 1}; xk < x + 2; ++xk)
-                    v += trails[vec2i{xk, yk}];
+            v += trails[vec2i{x + 1, y - 1}] * (1 / 16.f);
+            v += trails[vec2i{x, y - 1}] * (1 / 8.f);
+            v += trails[vec2i{x - 1, y - 1}] * (1 / 16.f);
+            v += trails[vec2i{x + 1, y}] * (1 / 8.f);
+            v += trails[vec2i{x, y}] * (1 / 4.f);
+            v += trails[vec2i{x - 1, y}] * (1 / 8.f);
+            v += trails[vec2i{x + 1, y + 1}] * (1 / 16.f);
+            v += trails[vec2i{x, y + 1}] * (1 / 8.f);
+            v += trails[vec2i{x - 1, y + 1}] * (1 / 16.f);
             new_trails[vec2i{x, y}] = v / 9.f;
         }
     }
@@ -433,7 +451,6 @@ int main() {
 
         {
             auto cost{stats().time("tick")};
-#pragma omp parallel for schedule(static)
             for (auto& population : state.families)
                 population = tick(population);
         }
