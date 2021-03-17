@@ -17,21 +17,19 @@
 
 #include "imgui/imgui.h"
 #include "imgui/imgui-SFML.h"
+#include "imgui/implot.h"
 
 struct runtime_statistics& stats();
 
 struct runtime_statistics {
-    std::unordered_map<const char*, std::deque<double>> costs;
+    std::map<const char*, std::vector<double>> costs;
 
     struct perf_block {
         perf_block(const char* key) : key(key) {}
-        ~perf_block()
-        {
+        ~perf_block() {
             auto delta = std::chrono::high_resolution_clock::now() - start;
             auto& store = stats().costs[key];
             store.push_back(delta.count() / 1000.0);
-            if (store.size() > 10)
-                store.pop_front();
         }
 
         const char* key;
@@ -41,27 +39,20 @@ struct runtime_statistics {
 
     auto time(const char* key) { return perf_block{key}; };
 
-    double avg(const char* key)
-    {
+    double avg(const char* key) {
         auto& ts = costs[key];
         return std::accumulate(ts.begin(), ts.end(), 0., std::plus{}) /
                ts.size();
     }
 };
 
-runtime_statistics& stats()
-{
+runtime_statistics& stats() {
     static runtime_statistics self{};
     return self;
 }
 
-template <typename T = float>
-struct grid {
-    grid(vec2i size) : size(size)
-    {
-        cells.resize(size.x * size.y);
-        std::fill(cells.begin(), cells.end(), T{});
-    }
+template <typename T = float> struct grid {
+    grid(vec2i size) : size(size) { cells.resize(size.x * size.y); }
 
     vec2i size;
     std::vector<T> cells;
@@ -71,36 +62,33 @@ struct grid {
 
     const T& operator[](vec2i v) const { return at(unwrap(v)); }
     T& operator[](vec2i v) { return at(unwrap(v)); }
-    T& operator[](vec2f v)
-    {
+    T& operator[](vec2f v) {
         return (*this)[vec2i{(int)std::floor(v.x), (int)std::floor(v.y)}];
     }
-    const T& operator[](vec2f v) const
-    {
+    const T& operator[](vec2f v) const {
         return (*this)[vec2i{(int)std::floor(v.x), (int)std::floor(v.y)}];
     }
 
-// private:
-    vec2i unwrap(vec2i v) const
-    {
+private:
+    vec2i unwrap(vec2i v) const {
         return vec2i{(v.x + size.x) % size.x, (v.y + size.y) % size.y};
     }
 };
 
 struct species {
     float speed{3.5f};
-    float rotation_angle{24*pi/180.f};
-    float sensor_angle{36*pi/180.f};
+    float rotation_angle{24 * pi / 180.f};
+    float sensor_angle{36 * pi / 180.f};
     float sensor_distance{18};
     float collision_rate{.8};
     float deposit{1};
     float decay_factor{.88};
-    float color[3] = {1, 1, 1};
+    std::array<float, 3> color = {1, 1, 1};
 };
 
 struct engine_params {
     static constexpr int sim_width{1000};
-    int initial_population{0};
+    int initial_population{8000};
     int diffuse_passes{1};
     bool decay_cutoff{false};
     std::unordered_map<int, species> families{};
@@ -117,8 +105,7 @@ enum class collision : char { unoccupied, occupied, moved };
 
 struct population {
     population(vec2i size, species* species)
-        : size(size), species(species), trails(size), collisions{size}
-    {}
+        : size(size), species(species), trails(size), collisions{size} {}
     vec2i size;
     species* species;
     grid<float> trails;
@@ -126,15 +113,14 @@ struct population {
     grid<collision> collisions;
 };
 
-struct simulation{
+struct simulation {
     vec2i size;
     std::vector<population> families{};
 };
 
 namespace apx {
 
-double cos(double x)
-{
+double cos(double x) {
     constexpr auto f4 = 2 * 3 * 4;
     constexpr auto f6 = f4 * 5 * 6;
     auto x2 = x * x;
@@ -143,8 +129,7 @@ double cos(double x)
     return 1. + x2 * (-1. / 2) + x4 * (1. / f4) + x6 * (-1. / f6);
 }
 
-double sin(double x)
-{
+double sin(double x) {
     constexpr auto f3 = 2 * 3;
     constexpr auto f5 = f3 * 4 * 5;
     constexpr auto f7 = f5 * 6 * 7;
@@ -155,8 +140,7 @@ double sin(double x)
     return x + x3 * (-1. / f3) + x5 * (1. / f5) + x7 * (-1. / f7);
 }
 
-vec2f rotate(vec2f v, double a)
-{
+vec2f rotate(vec2f v, double a) {
     auto s = apx::sin(a);
     auto c = apx::cos(a);
     return {v.x * c - v.y * s, v.x * s + v.y * c};
@@ -164,19 +148,16 @@ vec2f rotate(vec2f v, double a)
 
 }; // namespace apx
 
-auto random_direction()
-{
+auto random_direction() {
     return vec2f{1.0, 0.}.rotated(drand48() * std::asin(-1) * 4);
 }
 
-auto random_agent(vec2f size)
-{
+auto random_agent(vec2f size) {
     auto pos = vec2f{drand48() * size.x, drand48() * size.y};
     return agent{pos, random_direction()};
 }
 
-void move_agent(population& state, agent& a)
-{
+void move_agent(population& state, agent& a) {
     auto fwd_sensor = a.direction * state.species->sensor_distance;
     auto left_sensor =
         apx::rotate(fwd_sensor, state.species->sensor_angle * -1);
@@ -210,8 +191,7 @@ void move_agent(population& state, agent& a)
     }
 }
 
-void advance_agents(population& state)
-{
+void advance_agents(population& state) {
     std::random_shuffle(state.agents.begin(), state.agents.end());
     std::fill(state.collisions.cells.begin(), state.collisions.cells.end(),
               collision::unoccupied);
@@ -224,19 +204,14 @@ void advance_agents(population& state)
     }
 }
 
-auto deposits(const population& state)
-{
-    auto trails = state.trails;
-    // #pragma omp parallel for schedule(static)
+void deposits(population& state) {
     for (auto& [pos, _] : state.agents) {
         if (state.collisions[pos] == collision::moved)
-            trails[pos] += state.species->deposit;
+            state.trails[pos] += state.species->deposit;
     }
-    return trails;
 }
 
-auto diffuse(const grid<float>& trails)
-{
+auto diffuse(const grid<float>& trails) {
     auto new_trails = grid{trails.size};
 
     for (int y = 1; y < trails.size.y - 1; ++y) {
@@ -245,7 +220,7 @@ auto diffuse(const grid<float>& trails)
             for (int yk{y - 1}; yk < y + 2; ++yk)
                 for (int xk{x - 1}; xk < x + 2; ++xk)
                     v += trails.at({xk, yk});
-            new_trails.at(vec2i{x, y}) = v / 9.;
+            new_trails.at(vec2i{x, y}) = v / 9.f;
         }
     }
 
@@ -255,7 +230,7 @@ auto diffuse(const grid<float>& trails)
             for (int yk{y - 1}; yk < y + 2; ++yk)
                 for (int xk{x - 1}; xk < x + 2; ++xk)
                     v += trails[vec2i{xk, yk}];
-            new_trails[vec2i{x, y}] = v / 9.;
+            new_trails[vec2i{x, y}] = v / 9.f;
         }
     }
 
@@ -265,20 +240,23 @@ auto diffuse(const grid<float>& trails)
             for (int yk{y - 1}; yk < y + 2; ++yk)
                 for (int xk{x - 1}; xk < x + 2; ++xk)
                     v += trails[vec2i{xk, yk}];
-            new_trails[vec2i{x, y}] = v / 9.;
+            new_trails[vec2i{x, y}] = v / 9.f;
         }
     }
 
     return new_trails;
 }
 
-void decay(population& state)
-{
-    for (auto& v : state.trails.cells) {
-        v *= state.species->decay_factor;
-        if (config.decay_cutoff and v < .0001)
-            v = 0;
-    }
+void decay(population& state) {
+    if (config.decay_cutoff)
+        for (auto& v : state.trails.cells) {
+            v *= state.species->decay_factor;
+            if (v < .0001)
+                v = 0;
+        }
+    else
+        for (auto& v : state.trails.cells)
+            v *= state.species->decay_factor;
 
     for (auto& agent : state.agents) {
         while (agent.position.x < 0)
@@ -292,26 +270,22 @@ void decay(population& state)
     }
 }
 
-void consolidate(simulation& state)
-{
+void consolidate(simulation& state) {
     grid<float> trails{state.size};
     for (auto& family : state.families) {
-        for (auto n{0}; n < family.trails.cells.size(); ++n)
+        for (int n{}; n < family.trails.cells.size(); ++n)
             trails.cells[n] += family.trails.cells[n];
     }
 
     for (auto& family : state.families) {
-        for (auto n{0}; n < family.trails.cells.size(); ++n)
+        for (int n{}; n < family.trails.cells.size(); ++n)
             if (trails.cells[n] > 0)
                 family.trails.cells[n] *=
                     family.trails.cells[n] / trails.cells[n];
     }
 }
 
-auto tick(population state)
-{
-    auto cost{stats().time("tick")};
-
+auto tick(population state) {
     {
         auto cost{stats().time("move")};
         advance_agents(state);
@@ -319,7 +293,7 @@ auto tick(population state)
 
     {
         auto cost{stats().time("deposit")};
-        state.trails = deposits(state);
+        deposits(state);
     }
 
     {
@@ -341,14 +315,12 @@ struct renderer {
         : scale(1.f), resolution(size * scale),
           window(sf::VideoMode{(unsigned int)(resolution.x),
                                (unsigned int)(resolution.y)},
-                 "fff")
-    {
+                 "fff") {
         sim_draw_buffer.resize(4 * size.y * size.x);
         std::fill(sim_draw_buffer.begin(), sim_draw_buffer.end(), 255);
     }
 
-    void frame()
-    {
+    void frame() {
         window.display();
         window.clear();
     }
@@ -359,8 +331,7 @@ struct renderer {
     std::vector<unsigned char> sim_draw_buffer;
 };
 
-void draw_simulation(renderer& context, const simulation& sim)
-{
+void draw_simulation(renderer& context, const simulation& sim) {
     for (auto px = 0; px < sim.size.x * sim.size.y; ++px) {
         vec3<float> c{};
         float v{};
@@ -373,7 +344,6 @@ void draw_simulation(renderer& context, const simulation& sim)
 
         c /= v;
 
-        v /= sim.families.size();
         v = std::sqrt(v * 100.f);
         v = std::min(v, 10.f) * 25.5f;
 
@@ -394,21 +364,41 @@ void draw_simulation(renderer& context, const simulation& sim)
     context.window.draw(view_sprite);
 }
 
-int main()
-{
+auto rand_range(float a, float b) { return a + drand48() * (b - a); }
+float radians(float degrees) { return degrees * (float)(pi / 180.f); };
+
+auto random_species() {
+    species s{};
+    s.speed = rand_range(1.6, 6);
+    s.rotation_angle = radians(rand_range(8, 80));
+    s.sensor_angle = radians(rand_range(10, 80));
+    s.sensor_distance = s.speed + rand_range(4, 40);
+    s.collision_rate = rand_range(0, 1);
+    s.deposit = rand_range(0.6, 3);
+    s.decay_factor = rand_range(0.5, 0.9);
+    s.color[0] = rand_range(.3, 1);
+    s.color[1] = rand_range(.3, 1);
+    s.color[2] = 1.f - (s.color[0] + s.color[1]) / 2;
+    return s;
+}
+
+int main() {
     srand48(std::chrono::nanoseconds(
                 std::chrono::high_resolution_clock().now().time_since_epoch())
                 .count());
 
-    auto initial_species = species{};
-    initial_species.color[0] = .2;
-    initial_species.color[1] = .2;
-    initial_species.color[2] = 1;
-    config.families[config.families.size()] = initial_species;
-    selected_species = &config.families[0];
-
     simulation state{{config.sim_width, config.sim_width}};
-    state.families.emplace_back(state.size, selected_species);
+    state.families.emplace_back(
+        state.size,
+        &(config.families[config.families.size()] = random_species()));
+    state.families.emplace_back(
+        state.size,
+        &(config.families[config.families.size()] = random_species()));
+    state.families.emplace_back(
+        state.size,
+        &(config.families[config.families.size()] = random_species()));
+
+    selected_species = &config.families[0];
 
     for (auto& p : state.families) {
         for (int n{}; n < config.initial_population; ++n)
@@ -420,8 +410,8 @@ int main()
     auto t_prev = std::chrono::high_resolution_clock::now();
 
     ImGui::SFML::Init(display.window);
+    ImPlot::CreateContext();
 
-    auto report_time = t_prev - std::chrono::seconds{1};
     while (display.window.isOpen()) {
         auto t_now = std::chrono::high_resolution_clock::now();
         auto delta = t_now - t_prev;
@@ -441,16 +431,21 @@ int main()
             draw_simulation(display, state);
         }};
 
-        for (auto& population : state.families)
-            population = tick(population);
+        {
+            auto cost{stats().time("tick")};
+#pragma omp parallel for schedule(static)
+            for (auto& population : state.families)
+                population = tick(population);
+        }
 
-        consolidate(state);
-
+        {
+            auto cost{stats().time("blend")};
+            consolidate(state);
+        }
 
         render_thread.join();
 
         {
-            auto cost{stats().time("gui")};
             ImGui::SFML::Update(display.window,
                                 sf::milliseconds(delta.count() / 1000.));
 
@@ -473,15 +468,15 @@ int main()
 
             ImGui::Checkbox("Cutoff", &config.decay_cutoff);
 
-            if(ImGui::Button("Randomize")){
-                for(auto& population: state.families){
+            if (ImGui::Button("Randomize")) {
+                for (auto& population : state.families) {
                     population.trails = grid<float>{population.size};
                     for (auto& a : population.agents)
                         a = random_agent(vec2f{state.size});
                 }
             }
 
-            ImGui::SliderInt("Diffusion passes", &config.diffuse_passes, 0, 5);
+            ImGui::SliderInt("Diffusion passes", &config.diffuse_passes, 0, 4);
 
             ImGui::SliderFloat("Decay", &selected_species->decay_factor, 0.01,
                                0.999);
@@ -501,12 +496,12 @@ int main()
             ImGui::SliderFloat("Collision rate",
                                &selected_species->collision_rate, 0.0, 1.0);
 
-            ImGui::ColorEdit3("Color", selected_species->color);
+            ImGui::ColorEdit3("Color", selected_species->color.data());
 
             if (ImGui::Button("New species")) {
                 state.families.emplace_back(
-                    state.size,
-                    &(config.families[config.families.size()] = species{}));
+                    state.size, &(config.families[config.families.size()] =
+                                      random_species()));
             }
 
             population* selected_family = &state.families.front();
@@ -537,6 +532,42 @@ int main()
             }
 
             ImGui::End();
+
+            ImGui::Begin("Statistics");
+            {
+                static std::unordered_map<const char*, std::vector<double>>
+                    perf_series;
+                for (auto& [name, source] : stats().costs) {
+                    auto& store = perf_series[name];
+                    if (store.empty())
+                        store.push_back(0);
+                    auto n = std::accumulate(source.begin(), source.end(), 0) /
+                             (double)1000;
+                    auto f = *store.rbegin() * 0.8 + n * 0.2;
+                    store.push_back(f);
+                    source.clear();
+                }
+
+                auto width = 80;
+                ImPlot::FitNextPlotAxes();
+                if (ImPlot::BeginPlot("##perf", nullptr, nullptr,
+                                      ImVec2(-1, 160), 0,
+                                      ImPlotAxisFlags_NoTickLabels)) {
+
+                    for (auto name : {"frame", "tick", "render", "diffuse",
+                                      "move", "deposit", "decay", "blend"}) {
+                        auto& series = perf_series[name];
+                        auto count = std::min<int>(width, series.size());
+                        auto offset = series.size() - count;
+                        ImPlot::PlotLine(name, series.data() + offset, count);
+                    }
+
+                    ImPlot::EndPlot();
+                }
+            }
+
+            ImGui::End();
+
             ImGui::EndFrame();
 
             ImGui::SFML::Render(display.window);
@@ -544,31 +575,13 @@ int main()
 
         display.frame();
 
-        if (t_now - report_time > std::chrono::seconds{3}) {
-            std::vector<std::pair<double, const char*>> best;
-            for (const auto& [name, _] : stats().costs)
-                best.push_back({stats().avg(name), name});
-
-            std::sort(best.rbegin(), best.rend());
-            for (const auto& [cost, name] : best) {
-                auto percent = cost / (stats().avg("frame")) * 100.;
-                if (cost > 1000)
-                    fmt::print("{:6.1f}ms", cost / 1000.);
-                else
-                    fmt::print("{:6.1f}µs", cost);
-                fmt::print(" {:<12} {:5.1f}%\n", name, percent);
-            }
-            fmt::print("\n");
-
-            report_time = t_now;
-        }
-
         sf::Event event;
         while (display.window.pollEvent(event)) {
             if (event.type == sf::Event::Closed ||
                 (event.type == sf::Event::KeyPressed &&
                  event.key.code == sf::Keyboard::Escape)) {
                 display.window.close();
+                ImPlot::DestroyContext();
                 ImGui::SFML::Shutdown();
                 break;
             }
