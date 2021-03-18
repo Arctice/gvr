@@ -14,6 +14,7 @@
 #include <SFML/Window.hpp>
 #include <SFML/Graphics.hpp>
 #include <fmt/core.h>
+#include <fmt/ostream.h>
 
 #include "imgui/imgui.h"
 #include "imgui/imgui-SFML.h"
@@ -83,7 +84,7 @@ struct species {
     float collision_rate{.8};
     float deposit{1};
     float decay_factor{.88};
-    std::array<float, 3> color = {1, 1, 1};
+    vec3<float> color = {1, 1, 1};
 };
 
 struct engine_params {
@@ -147,6 +148,9 @@ vec2f rotate(vec2f v, double a) {
 }
 
 }; // namespace apx
+
+auto rand_range(float a, float b) { return a + drand48() * (b - a); }
+float radians(float degrees) { return degrees * (float)(pi / 180.f); };
 
 auto random_direction() {
     return vec2f{1.0, 0.}.rotated(drand48() * std::asin(-1) * 4);
@@ -349,6 +353,29 @@ struct renderer {
     std::vector<unsigned char> sim_draw_buffer;
 };
 
+vec3<float> hueshift_rgb(const vec3<float>& in, float hue) {
+    float cosA = std::cos(radians(hue));
+    float sinA = std::sin(radians(hue));
+
+    float matrix[3][3] = {
+        {cosA + (1.0f - cosA) / 3.0f,
+         1.0f / 3.0f * (1.0f - cosA) - sqrtf(1.0f / 3.0f) * sinA,
+         1.0f / 3.0f * (1.0f - cosA) + sqrtf(1.0f / 3.0f) * sinA},
+        {1.0f / 3.0f * (1.0f - cosA) + sqrtf(1.0f / 3.0f) * sinA,
+         cosA + 1.0f / 3.0f * (1.0f - cosA),
+         1.0f / 3.0f * (1.0f - cosA) - sqrtf(1.0f / 3.0f) * sinA},
+        {1.0f / 3.0f * (1.0f - cosA) - sqrtf(1.0f / 3.0f) * sinA,
+         1.0f / 3.0f * (1.0f - cosA) + sqrtf(1.0f / 3.0f) * sinA,
+         cosA + 1.0f / 3.0f * (1.0f - cosA)}};
+
+    auto r = in.x * matrix[0][0] + in.y * matrix[0][1] + in.z * matrix[0][2];
+    auto g = in.x * matrix[1][0] + in.y * matrix[1][1] + in.z * matrix[1][2];
+    auto b = in.x * matrix[2][0] + in.y * matrix[2][1] + in.z * matrix[2][2];
+    return vec3<float>{std::clamp<float>(r, 0, 1.f),
+                       std::clamp<float>(g, 0, 1.f),
+                       std::clamp<float>(b, 0, 1.f)};
+}
+
 void draw_simulation(renderer& context, const simulation& sim) {
     for (auto px = 0; px < sim.size.x * sim.size.y; ++px) {
         vec3<float> c{};
@@ -382,9 +409,6 @@ void draw_simulation(renderer& context, const simulation& sim) {
     context.window.draw(view_sprite);
 }
 
-auto rand_range(float a, float b) { return a + drand48() * (b - a); }
-float radians(float degrees) { return degrees * (float)(pi / 180.f); };
-
 auto random_species() {
     species s{};
     s.speed = rand_range(1.6, 6);
@@ -394,9 +418,10 @@ auto random_species() {
     s.collision_rate = rand_range(0, 1);
     s.deposit = rand_range(0.6, 3);
     s.decay_factor = rand_range(0.5, 0.9);
-    s.color[0] = rand_range(.3, 1);
-    s.color[1] = rand_range(.3, 1);
-    s.color[2] = 1.f - (s.color[0] + s.color[1]) / 2;
+    s.color.x = 1;
+    s.color.y = rand_range(0, 1);
+    s.color.z = 1.f - s.color.y;
+    s.color = hueshift_rgb(s.color, rand_range(-180, 180));
     return s;
 }
 
@@ -513,7 +538,7 @@ int main() {
             ImGui::SliderFloat("Collision rate",
                                &selected_species->collision_rate, 0.0, 1.0);
 
-            ImGui::ColorEdit3("Color", selected_species->color.data());
+            ImGui::ColorEdit3("Color", (float*)&selected_species->color);
 
             if (ImGui::Button("New species")) {
                 state.families.emplace_back(

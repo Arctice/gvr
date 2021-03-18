@@ -42,6 +42,8 @@ public:
                   std::is_same<T1, double>::value>::type>
     vec2<double> normalized() const;
 
+    T dot(const vec2&) const;
+
     template <typename T1 = T,
               typename = typename std::enable_if<
                   std::is_same<T1, double>::value>::type>
@@ -58,6 +60,12 @@ vec2f vec2<T>::normalized() const
 {
     double r = sqrt(this->length2());
     return vec2f(x / r, y / r);
+}
+
+template <typename T>
+T vec2<T>::dot(const vec2& rhs) const
+{
+    return x * rhs.x + y * rhs.y ;
 }
 
 template <typename T>
